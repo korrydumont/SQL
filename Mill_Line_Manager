@@ -1,0 +1,609 @@
+/*======================================================================================================================
+Name:           sb_Mill_Line_Manager_SP
+Author:         Korry DuMont
+Created:        1/26/2022
+Purpose:        Locates and combines cutlists from 2 days that can be combined. 
+
+Background:     [A longer description providing context, what happens prior to this script, business logic, etc. This
+                section might get pretty long, and that's okay.]
+
+Called from:    TBD
+
+Related:        [Name any other resources that may provide insight, or may be affected by changes to this script]
+
+Usage:			SELECT *
+				FROM sb_ssrs_cutlist_body AS SCD
+				WHERE SCD.Group_With_Name = 'KT-10-0203-KT-SO'
+				ORDER BY SCD.DisplayOrder;
+				
+------------------------------------------------------------------------------------------------------------------------
+
+DECLARE @Infobar InfobarType;
+EXEC sb_mill_line_manager_SP
+    @Parm1 = ''
+   ,@Infobar = @Infobar OUT;
+IF @Infobar IS NOT NULL
+    SELECT @Infobar;
+GO
+
+------------------------------------------------------------------------------------------------------------------------
+REVISION HISTORY -> Include RevID codes in the script body so revisions can be easily found using Ctrl-F!
+Rev ID  Date        Author              Comments
+------  ----------  ------------------  --------------------------------------------------------------------------------
+SB000   01/26/2022  Korry DuMont         Original version
+SB001   03/07/2022  Korry DuMont         Original version development completed
+======================================================================================================================*/
+--USE Mongoose_All;
+--GO
+--CREATE PROCEDURE dbo.sb_mill_line_manager_SP @Infobar InfobarType = NULL OUT
+--AS
+--SET NOCOUNT ON;
+--SET XACT_ABORT, QUOTED_IDENTIFIER, ANSI_NULLS, ANSI_PADDING, ANSI_WARNINGS ON;
+
+--DECLARE @Severity INT = 0
+--      , @ErrorMsg InfobarType = NULL;
+
+--    BEGIN TRY
+
+DELETE FROM dbo.sb_ssrs_cutlist_body
+WHERE 1 = 1;
+DELETE FROM dbo.sb_ssrs_cutlist_header
+WHERE 1 = 1;
+IF OBJECT_ID('tempdb..#TableMaster') IS NOT NULL
+    DROP TABLE #TableMaster;
+IF OBJECT_ID('tempdb..#Table1') IS NOT NULL
+    DROP TABLE #Table1;
+IF OBJECT_ID('tempdb..#Table2') IS NOT NULL
+    DROP TABLE #Table2;
+IF OBJECT_ID('tempdb..#Cutlist_Qty_Master') IS NOT NULL
+    DROP TABLE #Cutlist_Qty_Master;
+IF OBJECT_ID('tempdb..#Parts_Master') IS NOT NULL
+    DROP TABLE #Parts_Master;
+
+
+DECLARE @ProdDate DATE;
+DECLARE @ProdDatePast DATE;
+SET @ProdDate = '2022-02-18';
+SET @ProdDatePast = (dbo.sb_ProdDateDiff(@ProdDate, -1));
+
+
+CREATE TABLE #TableMaster
+(
+    CutlistName NVARCHAR(MAX) NULL
+  , ProdDate DATE NULL
+  , Serial NVARCHAR(30) NULL
+  , Mill_Line_Assignment NVARCHAR(10) NULL
+);
+
+CREATE TABLE #Table1
+(
+    CutlistName NVARCHAR(MAX) NULL
+  , ProdDate DATE NULL
+  , Serial NVARCHAR(30) NULL
+  , Mill_Line_Assignment NVARCHAR(10) NULL
+);
+
+CREATE TABLE #Table2
+(
+    CutlistName NVARCHAR(MAX) NULL
+  , PcsT1 INT NULL
+  , Prod_Date DATE NULL
+);
+
+CREATE TABLE #Cutlist_Qty_Master
+(
+    Cutlist_Name NVARCHAR(30) NOT NULL
+  , Qty INT NOT NULL
+);
+
+CREATE TABLE #Parts_Master
+(
+    Group_With_Cutlist_Name VARCHAR(MAX) NULL
+  , Frame_Part_Qty INT NULL
+  , CutlistName VARCHAR(MAX) NULL
+  , Total_Qty_Needed INT NULL
+  , SN_Count INT NULL
+  , Frame_Part NVARCHAR(30) NULL
+  , Pat NVARCHAR(10) NULL
+  , Part_Code INT NULL
+  , Thick NVARCHAR(30) NULL
+  , Width NVARCHAR(30) NULL
+  , Length DECIMAL(17, 5) NULL
+  , Frac VARCHAR(30) NULL
+  , Remarks VARCHAR(MAX) NULL
+  , Stick_Count VARCHAR(100) NULL
+  , Yellow TINYINT NULL
+  , Blue TINYINT NULL
+  , Green TINYINT NULL
+  , DarkGreen TINYINT NULL
+  , Purple TINYINT NULL
+  , Dark_Purple TINYINT NULL
+  , Gold TINYINT NULL
+  , Turquoise TINYINT NULL
+  , Gray TINYINT NULL
+  , Display_Order INT NULL
+  , Frame_Type NVARCHAR(200) NULL
+  , Remarks_Back_Color NVARCHAR(20) NULL
+  , Pattern_Font_Color NVARCHAR(20) NULL
+  , Kanban_Part TINYINT NULL
+  , Remark_Font_Color NVARCHAR(20) NULL
+  , Change_Color TINYINT NULL
+);
+
+--**************************************************************************************************
+INSERT INTO #TableMaster
+(
+    CutlistName
+  , ProdDate
+  , Serial
+  , Mill_Line_Assignment
+)
+SELECT MLCM.cutlist_name
+     , S.prod_date
+     , S.ser_num
+     , S.mill_cell_id
+FROM dbo.sb_serial AS S
+    JOIN dbo.sb_coitem AS C
+        ON C.co_num = S.co_num
+           AND C.co_line = S.co_line
+    JOIN dbo.sb_jobmatl AS J
+        ON J.job = C.job
+    JOIN dbo.sb_mill_lumber_cutlist_master AS MLCM
+        ON MLCM.cutlist_name = REPLACE(J.item, 'KTLM', 'KT-10')
+WHERE S.prod_date = @ProdDate
+      OR S.prod_date = @ProdDatePast
+         AND NOT EXISTS
+(
+    SELECT TOP (1)
+           AV.RowPointer
+    FROM dbo.sb_activity_view AS AV
+    WHERE AV.ser_num = S.ser_num
+          AND AV.activity_code = 'MCLP'
+)
+GROUP BY MLCM.cutlist_name
+       , S.prod_date
+       , S.ser_num
+       , S.mill_cell_id;
+
+--************************************************************************
+INSERT INTO #Table1 --Holding table for remaining cutlists for today -1
+(
+    CutlistName
+  , ProdDate
+  , Serial
+  , Mill_Line_Assignment
+--, am_pm
+)
+SELECT TM.CutlistName
+     , TM.ProdDate
+     , TM.Serial
+     , TM.Mill_Line_Assignment
+-- , TM.am_pm
+FROM #TableMaster AS TM
+WHERE TM.ProdDate = @ProdDatePast;
+
+--************************************************************************
+INSERT INTO #Table2 --Table for today's cutlists that meet the query
+(
+    CutlistName
+  , PcsT1
+  , Prod_Date
+)
+SELECT TM.CutlistName
+     , COUNT(TM.CutlistName)
+     , TM.ProdDate
+FROM #TableMaster AS TM
+WHERE TM.ProdDate = '2022-02-16' -- @ProdDate
+      AND EXISTS
+(
+    SELECT T.CutlistName FROM #Table1 AS T
+)
+GROUP BY TM.CutlistName
+       , TM.ProdDate
+HAVING COUNT(TM.CutlistName) <= 4;
+
+--************************************************************************
+INSERT INTO #Table1 --Adds todays to #table1 for a complete print job
+(
+    CutlistName
+  , ProdDate
+  , Serial
+  , Mill_Line_Assignment
+)
+SELECT T2.CutlistName
+     , TM.ProdDate
+     , TM.Serial
+     , TM.Mill_Line_Assignment
+FROM #TableMaster AS TM
+    JOIN #Table2 AS T2
+        ON T2.CutlistName = TM.CutlistName
+WHERE EXISTS
+(
+    SELECT T.CutlistName
+    FROM #Table2 AS T
+    WHERE T.CutlistName = TM.CutlistName
+)
+      AND TM.ProdDate = @ProdDate;
+
+--************************************************************************
+INSERT INTO #Cutlist_Qty_Master
+(
+    Cutlist_Name
+  , Qty
+)
+SELECT DISTINCT
+       T.CutlistName
+     , COUNT(T.CutlistName)
+FROM #Table1 AS T
+GROUP BY T.CutlistName;
+
+--************************************************************************
+INSERT INTO dbo.sb_ssrs_cutlist_header --Header
+(
+    image_path
+  , cut_list_group
+  , cut_list_group_formatted
+  , qty
+  , serials
+  , description
+  , note1
+  , note2
+  , vista_recipe_code_and_code_no
+  , legs
+  , t_nut_collection
+  , mill_line_assignment
+)
+SELECT REPLACE(
+                  MLCM.image1_path
+                , 'file:///N:/Public/Cut Lists/Pictures/'
+                , 'http://www.smithbrothers.net/ImgGlobal/CutLists/'
+              ) AS image_path
+     , MLCM.group_with_cutlist_name
+     , MLCM.group_with_cutlist_name + ' ' + 'Cut List For' + ' ' + CONVERT(NVARCHAR(8), @ProdDatePast, 101)
+     , COUNT(T1.Serial) AS Qty
+     , 'Serial Numbers for Cutlist: ' + STRING_AGG(LTRIM(T1.Serial), ',') AS Serials
+     , MLCM.description
+     , MLCM.note1
+     , MLCM.note2
+     , CASE
+           WHEN MLCM.vista_recipe_code IS NULL
+                OR MLCM.vista_recipe_code = '' THEN
+               ''
+           ELSE
+               'Vista Recipe:' + ' ' + MLCM.vista_recipe_code
+       END + ' ' + CASE
+                       WHEN MLCM.vista_recipe_code IS NOT NULL
+                            AND MLCM.code_no IS NOT NULL THEN
+                           '/'
+                       ELSE
+                           ''
+                   END + ' ' + CASE
+                                   WHEN MLCM.code_no IS NULL
+                                        OR MLCM.code_no = '' THEN
+                                       ''
+                                   ELSE
+                                       'CODE:' + ' ' + MLCM.code_no
+                               END
+     , CASE
+           WHEN MLCM.leg1_desc IS NULL
+                OR MLCM.leg1_desc = '' THEN
+               ''
+           ELSE
+               'LEGS:' + ' ' + MLCM.leg1_desc
+       END + CASE
+                 WHEN MLCM.leg1_desc IS NOT NULL
+                      AND MLCM.leg2_desc IS NOT NULL THEN
+                     ' ' + ' ' + '/'
+                 ELSE
+                     ''
+             END + ' ' + ' ' + CASE
+                                   WHEN MLCM.leg2_desc IS NULL
+                                        OR MLCM.leg2_desc = '' THEN
+                                       ''
+                                   ELSE
+                                       MLCM.leg2_desc
+                               END + ' ' + ' ' + CASE
+                                                     WHEN MLCM.leg2_desc IS NOT NULL
+                                                          AND MLCM.leg3_desc IS NOT NULL THEN
+                                                         ' ' + ' ' + '/'
+                                                     ELSE
+                                                         ''
+                                                 END + ' ' + ' ' + CASE
+                                                                       WHEN MLCM.leg3_desc IS NULL
+                                                                            OR MLCM.leg3_desc = '' THEN
+                                                                           ''
+                                                                       ELSE
+                                                                           MLCM.leg3_desc
+                                                                   END + ' ' + ' '
+       + CASE
+             WHEN MLCM.leg3_desc IS NOT NULL
+                  AND MLCM.leg4_desc IS NOT NULL THEN
+                 ' ' + ' ' + '/'
+             ELSE
+                 ''
+         END + ' ' + ' ' + CASE
+                               WHEN MLCM.leg4_desc IS NULL
+                                    OR MLCM.leg4_desc = '' THEN
+                                   ''
+                               ELSE
+                                   MLCM.leg4_desc
+                           END
+     , CASE
+           WHEN MLCM.t_nut1_desc IS NULL
+                OR MLCM.t_nut1_desc = '' THEN
+               ''
+           ELSE
+               'T-Nut:' + ' ' + MLCM.t_nut1_desc
+       END + CASE
+                 WHEN MLCM.t_nut1_desc IS NOT NULL
+                      AND MLCM.t_nut2_desc IS NOT NULL THEN
+                     ' ' + '/' + ' '
+                 ELSE
+                     ''
+             END + CASE
+                       WHEN MLCM.t_nut2_desc IS NULL
+                            OR MLCM.t_nut2_desc = '' THEN
+                           ''
+                       ELSE
+                           MLCM.t_nut2_desc
+                   END
+     , T1.Mill_Line_Assignment
+FROM dbo.sb_mill_lumber_cutlist_master AS MLCM
+    JOIN #Table1 AS T1
+        ON T1.CutlistName = MLCM.cutlist_name
+WHERE T1.CutlistName = MLCM.cutlist_name
+GROUP BY MLCM.group_with_cutlist_name
+       , MLCM.description
+       , MLCM.note1
+       , MLCM.note2
+       , MLCM.t_nut1_desc
+       , MLCM.t_nut2_desc
+       , MLCM.vista_recipe_code
+       , T1.Mill_Line_Assignment
+       , MLCM.code_no
+       , MLCM.leg1_desc
+       , MLCM.leg2_desc
+       , MLCM.leg3_desc
+       , MLCM.leg4_desc
+       , MLCM.image1_path;
+
+--************************************************************************
+INSERT INTO #Parts_Master
+(
+    Group_With_Cutlist_Name
+  , CutlistName
+  , SN_Count
+  , Frame_Part_Qty
+  , Total_Qty_Needed
+  , Frame_Part
+  , Pat
+  , Part_Code
+  , Thick
+  , Width
+  , Length
+  , Frac
+  , Remarks
+  , Yellow
+  , Blue
+  , Green
+  , DarkGreen
+  , Purple
+  , Dark_Purple
+  , Gold
+  , Turquoise
+  , Gray
+  , Display_Order
+  , Frame_Type
+  , Remarks_Back_Color
+  , Pattern_Font_Color
+  , Kanban_Part
+  , Remark_Font_Color
+  , Change_Color
+)
+SELECT DISTINCT
+       MLCM.group_with_cutlist_name
+     , T.CutlistName
+     , CQM.Qty AS SN_Count
+     , MLCL.qty AS Frame_Part_Qty
+     , CQM.Qty * MLCL.qty AS Total_Qty_Needed
+     , MLCL.frame_part
+     , MLCL.pattern
+     , MLCL.part_code
+     , MLCL.c_thickness
+     , MLCL.c_width
+     , MLCL.length
+     , MLCL.c_length
+     , MLCL.remarks
+     , MLCL.yellow
+     , MLCL.blue
+     , MLCL.green
+     , MLCL.dark_green
+     , MLCL.purple
+     , MLCL.dark_purple
+     , MLCL.gold
+     , MLCL.turquoise
+     , MLCL.gray
+     , MLCL.display_order
+     , MLCL.frame_type
+     , MLCL.remark_back_color
+     , MLCL.pattern_font_color
+     , MLCL.kanban_part
+     , MLCL.remark_font_color
+     , MLCL.change_color
+FROM #Table1 AS T
+    JOIN dbo.sb_Mill_Lumber_CutList AS MLCL
+        ON MLCL.cut_list_name = T.CutlistName
+    JOIN #Cutlist_Qty_Master AS CQM
+        ON T.CutlistName = CQM.Cutlist_Name
+    JOIN dbo.sb_mill_lumber_cutlist_master AS MLCM
+        ON MLCM.cutlist_name = T.CutlistName;
+
+--************************************************************************
+INSERT INTO dbo.sb_ssrs_cutlist_body
+(
+    group_with_name
+  , qty
+  , framepart
+  , partcode
+  , pattern
+  , cThickness
+  , cWidth
+  , cLength
+  , remarks
+  , yellow
+  , blue
+  , green
+  , dark_green
+  , purple
+  , dark_purple
+  , gold
+  , turquoise
+  , gray
+  , display_order
+  , stick_count
+  , frac
+  , remarks_back_color
+  , pattern_font_color
+  , kanban_part
+  , remark_font_color
+  , change_color
+)
+SELECT PM.Group_With_Cutlist_Name
+     , SUM(PM.Total_Qty_Needed) AS TotalQty
+     , PM.Frame_Part
+     , PM.Part_Code
+     , PM.Pat
+     , PM.Thick
+     , PM.Width
+     , PM.Length
+     , PM.Remarks
+     , PM.Yellow
+     , PM.Blue
+     , PM.Green
+     , PM.DarkGreen
+     , PM.Purple
+     , PM.Dark_Purple
+     , PM.Gold
+     , PM.Turquoise
+     , PM.Gray
+     , MIN(PM.Display_Order) AS DisplayOrder
+     , CASE
+           WHEN COUNT(1) = 1 THEN
+               MIN(PM.Frame_Type) + '(' + CAST(SUM(PM.Total_Qty_Needed) AS VARCHAR(20)) + ')'
+           ELSE
+               ''
+       END
+     , PM.Frac
+     , PM.Remarks_Back_Color
+     , PM.Pattern_Font_Color
+     , PM.Kanban_Part
+     , PM.Remark_Font_Color
+     , PM.Change_Color
+FROM #Parts_Master AS PM
+GROUP BY PM.Frame_Part
+       , PM.Group_With_Cutlist_Name
+       , PM.Part_Code
+       , PM.Pat
+       , PM.Thick
+       , PM.Width
+       , PM.Length
+       , PM.Remarks
+       , PM.Yellow
+       , PM.Blue
+       , PM.Green
+       , PM.DarkGreen
+       , PM.Purple
+       , PM.Dark_Purple
+       , PM.Gold
+       , PM.Turquoise
+       , PM.Gray
+       , PM.Frac
+       , PM.Remarks_Back_Color
+       , PM.Pattern_Font_Color
+       , PM.Kanban_Part
+       , PM.Remark_Font_Color
+       , PM.Change_Color;
+
+UPDATE SCB
+SET SCB.stick_count = STUFF((
+                                SELECT ', ' + PM.Frame_Type + '(' + CAST(PM.Total_Qty_Needed AS VARCHAR(20)) + ')'
+                                FROM #Parts_Master AS PM
+                                    LEFT JOIN dbo.sb_size_num AS SN
+                                        ON SN.size_code = PM.Frame_Type
+                                WHERE PM.Group_With_Cutlist_Name = SCB.group_with_name
+                                      AND PM.Frame_Part = SCB.framepart
+                                ORDER BY SN.sort_key
+                                FOR XML PATH('')
+                            )
+                          , 1
+                          , 2
+                          , ''
+                           )
+FROM dbo.sb_ssrs_cutlist_body AS SCB
+WHERE SCB.stick_count = '';
+
+--	   RETURN @Severity;
+
+--    END TRY
+--    BEGIN CATCH
+--        -- How to throw an error...
+--        --IF 1 = 1
+--        --BEGIN
+--        --    SET @ErrorMsg = 'Error!';
+--        --    THROW 51000, @ErrorMsg, 1
+--        --END
+
+--        -- Extract error information and build error message
+--        DECLARE @ErrorNumber INT
+--              , @ErrorSeverity INT
+--              , @ErrorState INT
+--              , @ErrorProcedure NVARCHAR(126)
+--              , @ErrorLine INT
+--              , @ErrorMessage NVARCHAR(4000)
+--              , @OutputMessage NVARCHAR(4000)
+--              , @xstate INT;
+
+--        SELECT @ErrorNumber = ERROR_NUMBER()
+--             , @ErrorSeverity = ERROR_SEVERITY()
+--             , @ErrorState = ERROR_STATE()
+--             , @ErrorProcedure = ERROR_PROCEDURE()
+--             , @ErrorLine = ERROR_LINE()
+--             , @ErrorMessage = ERROR_MESSAGE()
+--             , @xstate = XACT_STATE();
+
+--        EXEC BuildSqlErrorMessageSp @ErrorNumber
+--                                  , @ErrorSeverity
+--                                  , @ErrorState
+--                                  , @ErrorProcedure
+--                                  , @ErrorLine
+--                                  , @ErrorMessage
+--                                  , @OutputMessage OUTPUT;
+
+--        IF @xstate = -1
+--            ROLLBACK;
+--        IF @xstate = 1
+--           AND @@TRANCOUNT = 0
+--            ROLLBACK;
+--        IF @xstate = 1
+--           AND @@TRANCOUNT > 0
+--            ROLLBACK TRANSACTION;
+
+--        -- Append to the @Infobar message and display the error message
+--        SET @Infobar = ISNULL(@Infobar, '') + CHAR(10) + ISNULL(@OutputMessage, '');
+--        RAISERROR(
+--                     'Procedure %s: Line %d: Error %d: %s'
+--                   , 16
+--                   , 1
+--                   , @ErrorProcedure
+--                   , @ErrorLine
+--                   , @ErrorNumber
+--                   , @ErrorMessage
+--                 );
+
+--        -- Return one to indicate failure
+--        RETURN 1;
+
+--    END CATCH;
+--GO
+
+
